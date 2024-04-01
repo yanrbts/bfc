@@ -25,6 +25,7 @@ static const wchar_t def_upp_charset[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const wchar_t def_num_charset[] = L"0123456789";
 static const wchar_t def_sym_charset[] = L"!@#$%^&*()-_+=~`[]{}|\\:;\"'<>,.?/ ";
 
+static size_t numofelements = 0;
 static size_t inverted = 0;                 /* 0 for normal output 1 for aaa,baa,caa,etc */
 static unsigned long long bytecount = 0;    /* user specified break output into size */
 static unsigned long long linecount = 0;    /* user specified break output into count lines */
@@ -39,10 +40,12 @@ static size_t wk_make_wide_string(wchar_t *wout,
                                 int *is_unicode);
 static int wk_copy(wchar_t *dest, const char *src, int *is_unicode);
 static int wk_parse_size(char *s, size_t *calc);
-static int wk_parse_number(char *s, size_t max, size_t *calc);
-static int wk_dupskip(char *s, options_type *op);
-static wchar_t *wk_endstring(char *s, int *is_unicode);
+static int wk_parse_number(const char *s, size_t max, size_t *calc);
+static int wk_dupskip(const char *s, options_type *op);
+static wchar_t *wk_endstring(const char *s, int *is_unicode);
 static wchar_t *wk_alloc_wide_string(const char *s, int *is_unicode);
+static int wk_file(const char *s, char **fpath, char **tmpf, char **outputf);
+static int wk_wordarray(const char *s, wchar_t ***warray, char **argv, int i, int *is_unicode);
 
 /*
  * init validated parameters passed to the program
@@ -68,11 +71,17 @@ void wk_init_option(options_type *op) {
 
 void wk_start(int argc, char **argv) {
     int i = 0;
-    size_t calc = 0; /* recommend count */
+    size_t calc = 0;                /* recommend count */
     size_t min, max;
     wchar_t *endstr = NULL;
-    wchar_t *literalstring = NULL; /* user passed something using -l */
+    wchar_t *literalstring = NULL;  /* user passed something using -l */
     int is_unicode = 0;
+    size_t flag = 0;                /* 0 for chunk 1 for permute */
+    size_t flag4 = 0;               /* 0 don't create thread, 1 create print % done thread */
+    char *outputf = NULL;           /* user specified filename to write output to */
+    char *tmpf = NULL;
+    char *fpath = NULL;             /* path to outputfilename if specified*/
+    wchar_t **wordarray = NULL;     /* array to store words */
 
     wk_init_option(&options);
 
@@ -136,6 +145,28 @@ void wk_start(int argc, char **argv) {
                 literalstring = wk_alloc_wide_string(argv[i+1], &is_unicode);
             } else {
                 fprintf(stderr,"Please specify a list of characters you want to treat as literal @?%%^\n");
+                goto err;
+            }
+        }
+        /* outputfilename specified */
+        if (strncmp(argv[i], "-o", 2) == 0) {
+            flag4 = 1;
+            if (i+1 < argc) {
+                if (wk_file(argv[i+1], &fpath, &tmpf, &outputf) == -1) goto err;
+            } else {
+                fprintf(stderr,"Please specify a output filename\n");
+                goto err;
+            }
+        }
+        /* user specified letters/words to permute */
+        if (strncmp(argv[i], "-o", 2) == 0) {
+            if (i+1 < argc) {
+                flag = 1;
+                numofelements = (size_t)(argc-i)-1;
+                
+                if (wk_wordarray(argv[i+1], &wordarray, argv, i, &is_unicode) == -1) goto err;
+            } else {
+                fprintf(stderr,"Please specify a word or words to permute\n");
                 goto err;
             }
         }
@@ -294,7 +325,7 @@ static int wk_parse_size(char *s, size_t *calc) {
     return 0;
 }
 
-static int wk_parse_number(char *s, size_t max, size_t *calc) {
+static int wk_parse_number(const char *s, size_t max, size_t *calc) {
     if (s == NULL) return -1;
 
     linecount = strtoul(s, NULL, 10);
@@ -313,7 +344,7 @@ static int wk_parse_number(char *s, size_t max, size_t *calc) {
 }
 
 /* specify duplicates to skip */
-static int wk_dupskip(char *s, options_type *op) {
+static int wk_dupskip(const char *s, options_type *op) {
     size_t dupvalue;
     char *endptr; /* temp pointer for duplicates option */
 
@@ -342,7 +373,7 @@ static int wk_dupskip(char *s, options_type *op) {
     return 0;
 }
 
-static wchar_t *wk_endstring(char *s, int *is_unicode) {
+static wchar_t *wk_endstring(const char *s, int *is_unicode) {
     size_t slen;
     wchar_t *endstr;
 
@@ -366,6 +397,80 @@ static wchar_t *wk_alloc_wide_string(const char *s, int *is_unicode) {
         fprintf(stderr,"wk_alloc_wide_string: Can't allocate mem!\n");
         exit(EXIT_FAILURE);
     }
-    (void)make_wide_string(wstr, s ? s : "", len, is_unicode);
+    (void)wk_make_wide_string(wstr, s ? s : "", len, is_unicode);
     return wstr;
+}
+
+static int wk_file(const char *s, char **fpath, char **tmpf, char **outputf) {
+    char *hold;
+    size_t tp;
+
+    if (s == NULL) return -1;
+
+    hold = strrchr(s, '/');
+    *outputf = s;
+    if (hold == NULL) {
+        *fpath = calloc(6, sizeof(char));
+        if (*fpath == NULL) {
+            fprintf(stderr,"bfc: can't allocate memory for fpath1\n");
+            return -1;
+        }
+        memcpy(*fpath, "START", 5);
+        tmpf = outputf;
+    } else {
+        tp = strlen(s) - strlen(hold) + 1;
+        tmpf = &s[tp];
+        *fpath = calloc(tp+6, sizeof(char));
+        if (*fpath == NULL) {
+            fprintf(stderr,"bfc: can't allocate memory for fpath2\n");
+            return -1;
+        }
+        memcpy(*fpath, s, tp);
+        strncat(*fpath, "START", 5);
+    }
+}
+
+static int wcstring_cmp(const void *a, const void *b) {
+    const wchar_t **ia = (const wchar_t **)a;
+    const wchar_t **ib = (const wchar_t **)b;
+    return wcscmp(*ia, *ib);
+}
+
+static int wk_wordarray(const char *s, wchar_t ***warray, char **argv, int i, int *is_unicode) {
+    wchar_t *tempwcs;
+
+    if (numofelements == 1) {
+        tempwcs = wk_alloc_wide_string(s, is_unicode);
+        numofelements = wcslen(tempwcs);
+
+        *warray = calloc(numofelements, sizeof(wchar_t*));
+        if (*warray == NULL) {
+            fprintf(stderr,"can't allocate memory for wordarray3\n");
+            return -1;
+        }
+
+        for (int i = 0; i < numofelements; i++) {
+            (*warray)[i] = calloc(2, sizeof(wchar_t));
+            if ((*warray)[i] == NULL) {
+                fprintf(stderr,"can't allocate memory for wordarray2\n");
+                return -1;
+            }
+            (*warray)[i][0] = tempwcs[i];
+            (*warray)[i][1] = '\0';
+        }
+        free(tempwcs);
+    } else {
+        *warray = calloc(numofelements, sizeof(wchar_t*));
+        if (*warray == NULL) {
+            fprintf(stderr,"can't allocate memory for wordarray3\n");
+            return -1;
+        }
+        int n;
+        for (n = 0; n < numofelements; n++, i++) {
+            (*warray)[n] = wk_alloc_wide_string(argv[i+1], is_unicode);
+        }
+        /* sort wordarray so the results are sorted */
+        qsort(*warray, n, sizeof(char *), wcstring_cmp);
+    }
+    return 0;
 }
