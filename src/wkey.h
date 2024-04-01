@@ -61,5 +61,6 @@ typedef struct wkey {
 } wkey;
 
 void wk_init_option(options_type *op);
+void wk_start(int argc, char **argv);
 
 #endif
