@@ -142,10 +142,10 @@ void wk_start(int argc, char **argv) {
     my_thread.linetotal = 0;
 
     if (argc >= 4) {
-        if (wk_copy_charset(argc, argv, &i, charset, &is_unicode) == -1) goto err;
-        if (wk_copy_charset(argc, argv, &i, upp_charset, &is_unicode) == -1) goto err;
-        if (wk_copy_charset(argc, argv, &i, num_charset, &is_unicode) == -1) goto err;
-        if (wk_copy_charset(argc, argv, &i, sym_charset, &is_unicode) == -1) goto err;
+        if (wk_copy_charset(argc, argv, &i, &charset, &is_unicode) == -1) goto err;
+        if (wk_copy_charset(argc, argv, &i, &upp_charset, &is_unicode) == -1) goto err;
+        if (wk_copy_charset(argc, argv, &i, &num_charset, &is_unicode) == -1) goto err;
+        if (wk_copy_charset(argc, argv, &i, &sym_charset, &is_unicode) == -1) goto err;
     }
 
     min = (size_t)atoi(argv[1]);
