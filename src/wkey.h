@@ -33,6 +33,15 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 
+struct thread_data{
+    unsigned long long finalfilesize;   /* total size of output */
+    unsigned long long bytetotal;       /* total number of bytes so far */
+    unsigned long long bytecounter;     /* count number of bytes in output resets to 0 */
+    unsigned long long finallinecount;  /* total size of output */
+    unsigned long long linetotal;       /* total number of lines so far */
+    unsigned long long linecounter;     /* counts number of lines in output resets to 0 */
+};
+
 /* program options */
 typedef struct opts_struct {
     wchar_t *low_charset;

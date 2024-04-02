@@ -30,6 +30,16 @@ static size_t inverted = 0;                 /* 0 for normal output 1 for aaa,baa
 static unsigned long long bytecount = 0;    /* user specified break output into size */
 static unsigned long long linecount = 0;    /* user specified break output into count lines */
 static options_type options;                /* store validated parameters passed to the program */
+static struct thread_data my_thread;
+
+/*
+ * Need a largish global buffer for converting wide chars to multibyte
+ * to avoid doing an alloc on every single output line
+ * leading to heap frag.  Only alloc'd once at startup.
+ * Size is MAXSTRING*MB_CUR_MAX+1
+ */
+static char *gconvbuffer = NULL;
+static size_t gconvlen = 0;
 
 static wchar_t *wk_dupwcs(const wchar_t *s);
 static void wk_copy_without_dupes(wchar_t *dest, wchar_t *src);
@@ -46,6 +56,8 @@ static wchar_t *wk_endstring(const char *s, int *is_unicode);
 static wchar_t *wk_alloc_wide_string(const char *s, int *is_unicode);
 static int wk_file(const char *s, char **fpath, char **tmpf, char **outputf);
 static int wk_wordarray(const char *s, wchar_t ***warray, char **argv, int i, int *is_unicode);
+static wchar_t **wk_readpermute(const char *filename, int *is_unicode);
+static int wk_copy_charset(int argc, char **argv, int *i, wchar_t **c, int *is_unicode);
 
 /*
  * init validated parameters passed to the program
@@ -70,20 +82,71 @@ void wk_init_option(options_type *op) {
 }
 
 void wk_start(int argc, char **argv) {
-    int i = 0;
+    int i = 3;                      /* minimum number of parameters */
     size_t calc = 0;                /* recommend count */
     size_t min, max;
-    wchar_t *endstr = NULL;
+    wchar_t *endstr = NULL;         /* hold -e option */
     wchar_t *literalstring = NULL;  /* user passed something using -l */
     int is_unicode = 0;
     size_t flag = 0;                /* 0 for chunk 1 for permute */
     size_t flag4 = 0;               /* 0 don't create thread, 1 create print % done thread */
+    size_t resume = 0;              /* 0 new session 1 for resume */
     char *outputf = NULL;           /* user specified filename to write output to */
     char *tmpf = NULL;
     char *fpath = NULL;             /* path to outputfilename if specified*/
     wchar_t **wordarray = NULL;     /* array to store words */
+    wchar_t *startblock = NULL;     /* user specified starting point */
+    wchar_t *pattern = NULL;        /* user specified pattern */
+    char *compressalgo = NULL;      /* user specified compression program */
+    char *tempfilename = NULL;
+    wchar_t *charset;               /* character set */
+    wchar_t *upp_charset = NULL;
+    wchar_t *num_charset = NULL;
+    wchar_t *sym_charset = NULL;
 
     wk_init_option(&options);
+
+    gconvlen = MAXSTRING * MB_CUR_MAX + 1;
+    gconvbuffer = (char*)malloc(gconvlen);
+    if (gconvbuffer == NULL) {
+        fprintf(stderr,"Error: Failed to allocate memory\n");
+        goto err;
+    }
+
+    charset = wk_dupwcs(def_low_charset);
+    if (charset == NULL) {
+        fprintf(stderr,"bfc: can't allocate memory for default charset\n");
+        goto err;
+    }
+
+    upp_charset = wk_dupwcs(def_upp_charset);
+    if (upp_charset == NULL) {
+        fprintf(stderr,"bfc: can't allocate memory for default upp_charset\n");
+        goto err;
+    }
+
+    num_charset = wk_dupwcs(def_num_charset);
+    if (num_charset == NULL) {
+        fprintf(stderr,"bfc: can't allocate memory for default num_charset\n");
+        goto err;
+    }
+
+    sym_charset = wk_dupwcs(def_sym_charset);
+    if (sym_charset == NULL) {
+        fprintf(stderr,"crunch: can't allocate memory for default sym_charset\n");
+        goto err;
+    }
+
+    my_thread.finallinecount = 0;
+    my_thread.linecounter = 0;
+    my_thread.linetotal = 0;
+
+    if (argc >= 4) {
+        if (wk_copy_charset(argc, argv, &i, charset, &is_unicode) == -1) goto err;
+        if (wk_copy_charset(argc, argv, &i, upp_charset, &is_unicode) == -1) goto err;
+        if (wk_copy_charset(argc, argv, &i, num_charset, &is_unicode) == -1) goto err;
+        if (wk_copy_charset(argc, argv, &i, sym_charset, &is_unicode) == -1) goto err;
+    }
 
     min = (size_t)atoi(argv[1]);
     max = (size_t)atoi(argv[2]);
@@ -159,7 +222,7 @@ void wk_start(int argc, char **argv) {
             }
         }
         /* user specified letters/words to permute */
-        if (strncmp(argv[i], "-o", 2) == 0) {
+        if (strncmp(argv[i], "-p", 2) == 0) {
             if (i+1 < argc) {
                 flag = 1;
                 numofelements = (size_t)(argc-i)-1;
@@ -169,6 +232,102 @@ void wk_start(int argc, char **argv) {
                 fprintf(stderr,"Please specify a word or words to permute\n");
                 goto err;
             }
+        }
+        /* user specified file of words to permute */
+        if (strncmp(argv[i], "-q", 2) == 0) {
+            if (i+1 < argc) {
+                wordarray = wk_readpermute(argv[i+1], &is_unicode);
+                if (wordarray == NULL) goto err;
+                qsort(wordarray, numofelements, sizeof(char *), wcstring_cmp);
+                flag = 1; 
+            } else {
+                fprintf(stderr,"Please specify a filename for permute to read\n");
+                goto err;
+            }
+        }
+        /* user wants to resume a previous session */
+        if (strncmp(argv[i], "-r", 2) == 0) {
+            resume = 1;
+            i--; /* decrease by 1 since -r has no parameter value */
+        }
+        /* startblock specified */
+        if (strncmp(argv[i], "-s", 2) == 0) {
+            if (i+1 < argc && argv[i+1]) {
+                startblock = wk_alloc_wide_string(argv[i+1], &is_unicode);
+                if (wcslen(startblock) != min) {
+                    free(startblock);
+                    fprintf(stderr,"Warning: minimum length should be %d\n", (int)wcslen(startblock));
+                    goto err;
+                }
+            } else {
+                fprintf(stderr,"Please specify the word you wish to start at\n");
+                goto err;
+            }
+        }
+        /* pattern specified */
+        if (strncmp(argv[i], "-t", 2) == 0) {
+            if (i+1 < argc) {
+                pattern = wk_alloc_wide_string(argv[i+1], &is_unicode);
+
+                if ((max > wcslen(pattern)) || (min < wcslen(pattern))) {
+                    fprintf(stderr,"The maximum and minimum length should be the same size as the pattern you specified. \n");
+                    fprintf(stderr,"min = %d  max = %d  strlen(%s)=%d\n",(int)min, (int)max, argv[i+1], (int)wcslen(pattern));
+                    goto err;
+                }
+            } else {
+                fprintf(stderr,"Please specify a pattern\n");
+                goto err;
+            }
+        }
+        /* suppress filesize info */
+        if (strncmp(argv[i], "-u", 2) == 0) {
+            fprintf(stderr,"Disabling printpercentage thread.  NOTE: MUST be last option\n\n");
+            flag4=0;
+            i--;
+        }
+        /* compression algorithm specified */
+        if (strncmp(argv[i], "-z", 2) == 0) {
+            if (i+1 < argc) {
+                compressalgo = argv[i+1];
+                if ((compressalgo != NULL)
+                    && (strcmp(compressalgo, "gzip") != 0) 
+                    && (strcmp(compressalgo, "bzip2") != 0) 
+                    && (strcmp(compressalgo,"lzma") != 0) 
+                    && (strcmp(compressalgo,"7z") != 0)) {
+                    fprintf(stderr,"Only gzip, bzip2, lzma, and 7z are supported\n");
+                    goto err;
+                }
+            } else {
+                fprintf(stderr,"Only gzip, bzip2, lzma, and 7z are supported\n");
+                goto err;
+            }
+        }
+    } /* end parameter processing */
+
+    /* parameter validation */
+    if (literalstring != NULL && pattern == NULL) {
+        fprintf(stderr,"you must specify -t when using -l\n");
+        goto err;
+    }
+
+    if ((literalstring != NULL) && (pattern != NULL)) {
+        if (wcslen(literalstring) != wcslen(pattern)) {
+            fprintf(stderr,"Length of literal string should be the same length as pattern^\n");
+            goto err;
+        }
+    }
+
+    if (tempfilename != NULL) {
+        if ((bytecount > 0) && (strcmp(tempfilename, "START") != 0)) {
+            fprintf(stderr,"you must use -o START if you specify a count\n");
+            goto err;
+        }
+    }
+
+    if (endstr != NULL) {
+        if (max != wcslen(endstr)) {
+            fprintf(stderr,"End string length must equal maximum string size\n");
+            goto err;
         }
     }
 err:
@@ -471,6 +630,58 @@ static int wk_wordarray(const char *s, wchar_t ***warray, char **argv, int i, in
         }
         /* sort wordarray so the results are sorted */
         qsort(*warray, n, sizeof(char *), wcstring_cmp);
+    }
+    return 0;
+}
+
+static wchar_t **wk_readpermute(const char *filename, int *is_unicode) {
+    FILE *fp;
+    wchar_t **warray = NULL;
+    char buf[512];
+    size_t i = 0;
+
+    errno = 0;
+    numofelements = 0;
+    memset(buf, 0, sizeof(buf));
+    if ((fp = fopen(filename, "r")) == NULL) {
+        fprintf(stderr,"readpermute: File %s could not be opened\n", filename);
+        fprintf(stderr,"The problem is = %s\n", strerror(errno));
+        return NULL;
+    } else {
+        while (fgets(buf, sizeof(buf), fp) != NULL) {
+            if (buf[0] != '\n')
+                numofelements++;
+        }
+        (void)fseek(fp, 0, SEEK_SET);
+
+        warray = calloc(numofelements, sizeof(wchar_t*));
+        if (warray == NULL) {
+            fprintf(stderr,"readpermute: can't allocate memory for wordarray1\n");
+            return NULL;
+        }
+        while (fgets(buf, (int)sizeof(buf), fp) != NULL) {
+            if (buf[0] != '\n' && buf[0] != '\0') {
+                buf[strlen(buf)-1] = '\0';
+                warray[i++] = wk_alloc_wide_string(buf, is_unicode);
+            }
+        }
+
+        if (fclose(fp) != 0) {
+            fprintf(stderr,"readpermute: fclose returned error number = %d\n", errno);
+            fprintf(stderr,"The problem is = %s\n", strerror(errno));
+        }
+        return warray;
+    }
+}
+
+static int wk_copy_charset(int argc, char **argv, int *i, wchar_t **c, int *is_unicode) {
+    if (argc > *i && *argv[*i] != '-') {
+        if (*argv[*i] != '+') {
+            free(*c);
+            if(wk_copy(*c, argv[*i], is_unicode) == -1)
+                return -1;
+        }
+        (*i)++;
     }
     return 0;
 }
