@@ -58,6 +58,8 @@ static int wk_file(const char *s, char **fpath, char **tmpf, char **outputf);
 static int wk_wordarray(const char *s, wchar_t ***warray, char **argv, int i, int *is_unicode);
 static wchar_t **wk_readpermute(const char *filename, int *is_unicode);
 static int wk_copy_charset(int argc, char **argv, int *i, wchar_t **c, int *is_unicode);
+static int wk_check_member(const wchar_t *string1, const options_type *options);
+static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end);
 
 /*
  * init validated parameters passed to the program
@@ -330,6 +332,8 @@ void wk_start(int argc, char **argv) {
             goto err;
         }
     }
+
+    if (wk_check_start_end(charset, startblock, endstr) == -1) goto err;
 err:
     exit(EXIT_FAILURE);
 }
@@ -684,4 +688,77 @@ static int wk_copy_charset(int argc, char **argv, int *i, wchar_t **c, int *is_u
         (*i)++;
     }
     return 0;
+}
+
+/* return 0 if string1 does not comply with options.pattern and options.literalstring */
+static int wk_check_member(const wchar_t *string1, const options_type *options) {
+    const wchar_t *cset;
+    size_t i;
+
+    for (i = 0; i < wcslen(string1); i++) {
+        cset = NULL;
+        switch (options->pattern[i]) {
+        case L'@':
+            if (options->literalstring[i] != L'@')
+                cset = options->low_charset;
+            break;
+        case L',':
+            if (options->literalstring[i] != L',')
+                cset = options->upp_charset;
+            break;
+        case L'%':
+            if (options->literalstring[i] != L'%')
+                cset = options->num_charset;
+            break;
+        case L'^':
+            if (options->literalstring[i] != L'^')
+                cset = options->sym_charset;
+            break;
+        default: /* constant part of pattern */
+            break;
+        }
+
+        if (cset == NULL) {
+            if (string1[i] != options->pattern[i])
+                return 0;
+            continue;
+        }
+
+        while (*cset) {
+            if (string1[i] == *cset)
+                break;
+            else
+                cset++;
+        }
+        if (*cset == L'\0')
+            return 0;
+    }
+    return 1;
+}
+
+static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end) {
+    int i;
+
+    if (start != NULL && end != NULL) {
+        for (i = 0; i < wcslen(start); i++) {
+            wchar_t startcharsrch = start[i];
+            wchar_t * startpos;
+            startpos = wcschr(cset, startcharsrch);
+            int startplace = startpos - cset;
+
+            wchar_t endcharsrch = end[i];
+            wchar_t * endpos;
+            endpos = wcschr(cset, endcharsrch);
+            int endplace = endpos - cset;
+
+            if (startplace > endplace) {
+                fprintf(stderr,"End string must be greater than start string\n");
+                return -1;
+            }
+
+            if (startplace < endplace)
+                return 0;
+        }
+    }
+    return -1;
 }
