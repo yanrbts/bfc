@@ -60,6 +60,7 @@ static wchar_t **wk_readpermute(const char *filename, int *is_unicode);
 static int wk_copy_charset(int argc, char **argv, int *i, wchar_t **c, int *is_unicode);
 static int wk_check_member(const wchar_t *string1, const options_type *options);
 static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end);
+static int wk_default_literalstring(size_t max, wchar_t **wstr);
 
 /*
  * init validated parameters passed to the program
@@ -334,6 +335,10 @@ void wk_start(int argc, char **argv) {
     }
 
     if (wk_check_start_end(charset, startblock, endstr) == -1) goto err;
+
+    if (literalstring == NULL) {
+        if (wk_default_literalstring(max, &literalstring) == -1) goto err;
+    }
 err:
     exit(EXIT_FAILURE);
 }
@@ -742,12 +747,12 @@ static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end) {
     if (start != NULL && end != NULL) {
         for (i = 0; i < wcslen(start); i++) {
             wchar_t startcharsrch = start[i];
-            wchar_t * startpos;
+            wchar_t *startpos;
             startpos = wcschr(cset, startcharsrch);
             int startplace = startpos - cset;
 
             wchar_t endcharsrch = end[i];
-            wchar_t * endpos;
+            wchar_t *endpos;
             endpos = wcschr(cset, endcharsrch);
             int endplace = endpos - cset;
 
@@ -761,4 +766,20 @@ static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end) {
         }
     }
     return -1;
+}
+
+static int wk_default_literalstring(size_t max, wchar_t **wstr) {
+    size_t size;
+
+    *wstr = calloc(max+1, sizeof(wchar_t));
+    if (*wstr == NULL) {
+        fprintf(stderr,"can't allocate memory for literalstring\n");
+        return -1;
+    }
+    
+    for (size = 0; size < max; size++)
+        (*wstr)[size] = L'-';
+    (*wstr)[max] = L'\0';
+
+    return 0;
 }
