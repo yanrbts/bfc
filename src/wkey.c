@@ -61,6 +61,7 @@ static int wk_copy_charset(int argc, char **argv, int *i, wchar_t **c, int *is_u
 static int wk_check_member(const wchar_t *string1, const options_type *options);
 static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end);
 static int wk_default_literalstring(size_t max, wchar_t **wstr);
+static size_t wk_find_index(const wchar_t *cset, size_t clen, wchar_t tofind);
 
 /*
  * init validated parameters passed to the program
@@ -295,8 +296,8 @@ void wk_start(int argc, char **argv) {
                 if ((compressalgo != NULL)
                     && (strcmp(compressalgo, "gzip") != 0) 
                     && (strcmp(compressalgo, "bzip2") != 0) 
-                    && (strcmp(compressalgo,"lzma") != 0) 
-                    && (strcmp(compressalgo,"7z") != 0)) {
+                    && (strcmp(compressalgo, "lzma") != 0) 
+                    && (strcmp(compressalgo, "7z") != 0)) {
                     fprintf(stderr,"Only gzip, bzip2, lzma, and 7z are supported\n");
                     goto err;
                 }
@@ -782,4 +783,15 @@ static int wk_default_literalstring(size_t max, wchar_t **wstr) {
     (*wstr)[max] = L'\0';
 
     return 0;
+}
+
+/* NOTE: similar to strpbrk but length limited and only searches for a single char */
+static size_t wk_find_index(const wchar_t *cset, size_t clen, wchar_t tofind) {
+    size_t i;
+
+    for (i = 0; i < clen; i++) {
+        if (cset[i] == tofind)
+            return i;
+        return NPOS;
+    }
 }
