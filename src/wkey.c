@@ -62,6 +62,9 @@ static int wk_check_member(const wchar_t *string1, const options_type *options);
 static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end);
 static int wk_default_literalstring(size_t max, wchar_t **wstr);
 static size_t wk_find_index(const wchar_t *cset, size_t clen, wchar_t tofind);
+static int wk_too_many_duplicates(const wchar_t *block, const options_type options);
+static int wk_fill_minmax_strings(options_type *options);
+static int wcstring_cmp(const void *a, const void *b);
 
 /*
  * init validated parameters passed to the program
@@ -85,7 +88,7 @@ void wk_init_option(options_type *op) {
         op->duplicates[i] = NPOS;
 }
 
-void wk_start(int argc, char **argv) {
+void main(int argc, char **argv) {
     int i = 3;                      /* minimum number of parameters */
     size_t calc = 0;                /* recommend count */
     size_t min, max;
@@ -340,6 +343,59 @@ void wk_start(int argc, char **argv) {
     if (literalstring == NULL) {
         if (wk_default_literalstring(max, &literalstring) == -1) goto err;
     }
+
+    options.low_charset = charset;
+    options.upp_charset = upp_charset;
+    options.num_charset = num_charset;
+    options.sym_charset = sym_charset;
+    options.clen = charset ? wcslen(charset) : 0;
+    options.ulen = upp_charset ? wcslen(upp_charset) : 0;
+    options.nlen = num_charset ? wcslen(num_charset) : 0;
+    options.slen = sym_charset ? wcslen(sym_charset) : 0;
+    options.pattern = pattern;
+    options.plen = pattern ? wcslen(pattern) : 0;
+    options.literalstring = literalstring;
+    options.endstring = endstr;
+    options.max = max;
+
+    if (pattern != NULL && startblock != NULL) {
+        if (wk_check_member(startblock, &options) == 0) {
+            fprintf(stderr,"startblock is not valid according to the pattern/literalstring\n");
+            goto err;
+        }
+    }
+
+    if (pattern != NULL && endstr != NULL) {
+        if (wk_check_member(endstr, &options) == 0) {
+            fprintf(stderr,"endstring is not valid according to the pattern/literalstring\n");
+            goto err;
+        }
+    }
+
+    if (endstr && wk_too_many_duplicates(endstr, options)) {
+        fprintf(stderr,"Error: End string set by -e will never occur (too many duplicate chars)\n");
+        goto err;
+    }
+
+    if (is_unicode) {
+        char response[8];
+        fprintf(stderr,
+                "Notice: Detected unicode characters.  If you are piping crunch output\n"\
+                "to another program such as john or aircrack please make sure that program\n"\
+                "can handle unicode input.\n"\
+                "\n");
+
+        fprintf(stderr, "Do you want to continue? [Y/n] ");
+        fgets(response, 8, stdin);
+        if (toupper(response[0]) == 'N') {
+            fprintf(stderr,"Aborted by user.\n");
+            goto err;
+        }
+    }
+    /* start processing */
+    options.startstring = startblock;
+    options.min = min;
+
 err:
     exit(EXIT_FAILURE);
 }
@@ -794,4 +850,119 @@ static size_t wk_find_index(const wchar_t *cset, size_t clen, wchar_t tofind) {
             return i;
         return NPOS;
     }
+}
+
+static int wk_too_many_duplicates(const wchar_t *block, const options_type options) {
+    wchar_t cchar = L'\0';
+    size_t dupes_seen = 0;
+
+    while (*block != L'\0') {
+        if (*block == cchar) {
+            /* check for overflow of duplicates */
+            dupes_seen += 1;
+
+            if (dupes_seen > options.duplicates[0]) {
+                if (wk_find_index(options.low_charset, options.clen, cchar) != NPOS) return 1;
+            }
+            if (dupes_seen > options.duplicates[1]) {
+                if (wk_find_index(options.upp_charset, options.ulen, cchar) != NPOS) return 1;
+            }
+            if (dupes_seen > options.duplicates[2]) {
+                if (wk_find_index(options.num_charset, options.nlen, cchar) != NPOS) return 1;
+            }
+            if (dupes_seen > options.duplicates[3]) {
+                if (wk_find_index(options.sym_charset, options.slen, cchar) != NPOS) return 1;
+            }
+        } else {
+            cchar = *block;
+            dupes_seen = 1;
+        }
+        block++;
+    }
+    return 0;
+}
+
+static inline wchar_t *wk_strcalloc(size_t size) {
+    wchar_t *tmp = NULL;
+
+    tmp = calloc(size+1, sizeof(wchar_t));
+    if (tmp == NULL) {
+        fprintf(stderr,"wk string calloc function can't allocate memory\n");
+        return NULL;
+    }
+    tmp[size-1] = L'\0';
+
+    return tmp;
+}
+
+static int wk_fill_minmax_strings(options_type *options) {
+    size_t i;
+    wchar_t *last_min;                  /* last string of size min */
+    wchar_t *first_max;                 /* first string of size max */
+    wchar_t *min_string, *max_string;   /* first string of size min, last string of size max */
+
+    if ((last_min = wk_strcalloc(options->min+1)) == NULL) return -1;
+    if ((first_max = wk_strcalloc(options->max+1)) == NULL) return -1;
+    if ((min_string = wk_strcalloc(options->min+1)) == NULL) return -1;
+    if ((max_string = wk_strcalloc(options->max+1)) == NULL) return -1;
+
+    /* fill last_min and first_max */
+    for (i = 0; i < options->max; i++) {
+        if (options->pattern == NULL) {
+            if (i < options->min) {
+                last_min[i] = options->low_charset[options->clen-1];
+                min_string[i] = options->low_charset[0];
+            }
+            first_max[i] = options->low_charset[0];
+            max_string[i] = options->low_charset[options->clen-1];
+        } else { /* min == max */
+            min_string[i] = max_string[i] = last_min[i] = first_max[i] = options->pattern[i];
+            switch (options->pattern[i]) {
+            case L'@':
+                if (options->literalstring[i] != L'@') {
+                    max_string[i] = last_min[i] = options->low_charset[options->clen-1];
+                    min_string[i] = first_max[i] = options->low_charset[0];
+                }
+                break;
+            case L',':
+                if (options->literalstring[i] != L',') {
+                    max_string[i] = last_min[i] = options->upp_charset[options->clen-1];
+                    min_string[i] = first_max[i] = options->upp_charset[0];
+                }
+                break;
+            case L'%':
+                if (options->literalstring[i] != L',') {
+                    max_string[i] = last_min[i] = options->num_charset[options->clen-1];
+                    min_string[i] = first_max[i] = options->num_charset[0];
+                }
+                break;
+            case L'^':
+                if (options->literalstring[i] != L',') {
+                    max_string[i] = last_min[i] = options->sym_charset[options->clen-1];
+                    min_string[i] = first_max[i] = options->sym_charset[0];
+                }
+                break;
+            default:
+                break;
+            }
+        }
+    }
+
+    options->last_min = last_min;
+    options->first_max = first_max;
+
+    if (options->startstring) {
+        for (i = 0; i < options->min; i++)
+            min_string[i] = options->startstring[i];
+    }
+
+    if (options->endstring) {
+        for (i = 0; i < options->max; i++)
+            max_string[i] = options->endstring[i];
+    }
+
+    options->min_string = min_string;
+    options->max_string = max_string;
+
+    return 0;
 }
