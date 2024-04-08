@@ -42,6 +42,15 @@ struct thread_data{
     unsigned long long linecounter;     /* counts number of lines in output resets to 0 */
 };
 
+/* pattern info */
+struct pinfo {
+    wchar_t *cset;                      /* character set pattern[i] is member of */
+    size_t clen;
+    int is_fixed;                       /* whether pattern[i] is a fixed value */
+    size_t start_index, end_index;      /* index into cset for the start and end strings */
+    size_t duplicates;
+};
+
 /* program options */
 typedef struct opts_struct {
     wchar_t *low_charset;

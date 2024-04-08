@@ -88,7 +88,7 @@ void wk_init_option(options_type *op) {
         op->duplicates[i] = NPOS;
 }
 
-void main(int argc, char **argv) {
+int main(int argc, char **argv) {
     int i = 3;                      /* minimum number of parameters */
     size_t calc = 0;                /* recommend count */
     size_t min, max;
@@ -181,7 +181,7 @@ void main(int argc, char **argv) {
 
         if (strncmp(argv[i], "-c", 2) == 0) {
             if (i+1 < argc) {
-                if (wk_parse_number(argv[i+1], &max, &calc) == -1) goto err;
+                if (wk_parse_number(argv[i+1], max, &calc) == -1) goto err;
             } else {
                 fprintf(stderr,"Please specify the number of lines you want\n");
             }
@@ -395,9 +395,12 @@ void main(int argc, char **argv) {
     /* start processing */
     options.startstring = startblock;
     options.min = min;
+    wk_fill_minmax_strings(&options);
 
+    return 0;
 err:
     exit(EXIT_FAILURE);
+    return -1;
 }
 
 /* replacement for wcsdup, where not avail (it's POSIX) 
@@ -523,7 +526,8 @@ err:
 static int wk_parse_size(char *s, size_t *calc) {
     size_t slen;
     
-    int i, multi = 0;
+    int multi = 0;
+    size_t i;
 
     if (s == NULL) {
         fprintf(stderr,"bvalue has a serious problem\n");
@@ -543,7 +547,7 @@ static int wk_parse_size(char *s, size_t *calc) {
 
     *calc = strtoul(s, NULL, 10);
     bytecount = (*calc) * multi;
-    if (calc > 4 && multi >= 1073741824 && bytecount <= 4294967295ULL) {
+    if (*calc > 4UL && multi >= 1073741824 && bytecount <= 4294967295ULL) {
         fprintf(stderr,"ERROR: Your system is unable to process numbers greater than 4.294.967.295. Please specify a filesize <= 4GiB.\n");
         return -1;
     }
@@ -576,7 +580,7 @@ static int wk_dupskip(const char *s, options_type *op) {
     if (s == NULL) return -1;
 
     dupvalue = (size_t)strtoul(s, &endptr, 10);
-    if (*endptr == s) {
+    if (endptr == s) {
         fprintf(stderr,"-d must be followed by [n][@,%%^]\n");
         return -1;
     }
@@ -633,7 +637,7 @@ static int wk_file(const char *s, char **fpath, char **tmpf, char **outputf) {
     if (s == NULL) return -1;
 
     hold = strrchr(s, '/');
-    *outputf = s;
+    *outputf = (char*)s;
     if (hold == NULL) {
         *fpath = calloc(6, sizeof(char));
         if (*fpath == NULL) {
@@ -653,6 +657,7 @@ static int wk_file(const char *s, char **fpath, char **tmpf, char **outputf) {
         memcpy(*fpath, s, tp);
         strncat(*fpath, "START", 5);
     }
+    return 0;
 }
 
 static int wcstring_cmp(const void *a, const void *b) {
@@ -674,7 +679,7 @@ static int wk_wordarray(const char *s, wchar_t ***warray, char **argv, int i, in
             return -1;
         }
 
-        for (int i = 0; i < numofelements; i++) {
+        for (size_t i = 0; i < numofelements; i++) {
             (*warray)[i] = calloc(2, sizeof(wchar_t));
             if ((*warray)[i] == NULL) {
                 fprintf(stderr,"can't allocate memory for wordarray2\n");
@@ -799,7 +804,7 @@ static int wk_check_member(const wchar_t *string1, const options_type *options) 
 }
 
 static int wk_check_start_end(wchar_t *cset, wchar_t *start, wchar_t *end) {
-    int i;
+    size_t i;
 
     if (start != NULL && end != NULL) {
         for (i = 0; i < wcslen(start); i++) {
@@ -848,8 +853,8 @@ static size_t wk_find_index(const wchar_t *cset, size_t clen, wchar_t tofind) {
     for (i = 0; i < clen; i++) {
         if (cset[i] == tofind)
             return i;
-        return NPOS;
     }
+    return NPOS;
 }
 
 static int wk_too_many_duplicates(const wchar_t *block, const options_type options) {
@@ -965,4 +970,94 @@ static int wk_fill_minmax_strings(options_type *options) {
     options->max_string = max_string;
 
     return 0;
+}
+
+static void wk_fill_pattern_info(options_type *options) {
+    struct pinfo *p;
+    wchar_t *cset;
+    size_t i, clen, index, si, ei;
+    int is_fixed;
+    size_t dupes;
+
+    options->pattern_info = calloc(options->max, sizeof(struct pinfo));
+    if (options->pattern_info == NULL) {
+        fprintf(stderr,"fill_pattern_info: can't allocate memory for pattern info\n");
+        exit(EXIT_FAILURE);
+    }
+
+    for (i = 0; i < options->max; i++) {
+        cset = NULL;
+        clen = 0;
+        index = 0;
+        is_fixed = 1;
+        dupes = options->duplicates[0];
+
+        if (options->pattern == NULL) {
+            cset = options->low_charset;
+            clen = options->clen;
+            is_fixed = 0;
+        } else {
+            cset = NULL;
+            switch (options->pattern[i]) {
+            case L'@':
+                if (options->literalstring[i] != L'@') {
+                    cset = options->low_charset;
+                    clen = options->clen;
+                    is_fixed = 0;
+                    dupes = options->duplicates[0];
+                }
+                break;
+            case L',':
+                if (options->literalstring[i] != L',') {
+                    cset = options->upp_charset;
+                    clen = options->ulen;
+                    is_fixed = 0;
+                    dupes = options->duplicates[1];
+                }
+                break;
+            case L'%':
+                if (options->literalstring[i] != L'%') {
+                    cset = options->num_charset;
+                    clen = options->nlen;
+                    is_fixed = 0;
+                    dupes = options->duplicates[2];
+                }
+                break;
+            case L'^':
+                if (options->literalstring[i] != L'^') {
+                    cset = options->sym_charset;
+                    clen = options->slen;
+                    is_fixed = 0;
+                    dupes = options->duplicates[3];
+                }
+                break;
+            default: /* constant part of pattern */
+                break;
+            }
+        }
+
+        if (cset == NULL) {
+            /* fixed character.  find its charset and index within. */
+            cset = options->low_charset;
+            clen = options->clen;
+            dupes = options->duplicates[0];
+
+            if (options->pattern == NULL) {
+                fprintf(stderr,"fill_pattern_info: options->pattern is NULL!\n");
+                exit(EXIT_FAILURE);
+            }
+
+            si = ei = index;
+        } else {
+
+        }
+        
+        p = &(options->pattern_info[i]);
+        p->cset = cset;
+        p->clen = clen;
+        p->is_fixed = is_fixed;
+        p->start_index = si;
+        p->end_index = ei;
+        p->duplicates = dupes;
+    }
 }
