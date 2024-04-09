@@ -25,6 +25,7 @@ static const wchar_t def_upp_charset[] = L"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 static const wchar_t def_num_charset[] = L"0123456789";
 static const wchar_t def_sym_charset[] = L"!@#$%^&*()-_+=~`[]{}|\\:;\"'<>,.?/ ";
 
+static size_t inc[128];
 static size_t numofelements = 0;
 static size_t inverted = 0;                 /* 0 for normal output 1 for aaa,baa,caa,etc */
 static unsigned long long bytecount = 0;    /* user specified break output into size */
@@ -65,6 +66,8 @@ static size_t wk_find_index(const wchar_t *cset, size_t clen, wchar_t tofind);
 static int wk_too_many_duplicates(const wchar_t *block, const options_type options);
 static int wk_fill_minmax_strings(options_type *options);
 static int wcstring_cmp(const void *a, const void *b);
+static void wk_fill_pattern_info(options_type *options);
+static wchar_t *wk_resumesession(const char *fpath, const wchar_t *charset);
 
 /*
  * init validated parameters passed to the program
@@ -396,6 +399,28 @@ int main(int argc, char **argv) {
     options.startstring = startblock;
     options.min = min;
     wk_fill_minmax_strings(&options);
+    wk_fill_pattern_info(&options);
+
+    if (resume == 1) {
+        if (startblock != NULL) {
+            fprintf(stderr,"you cannot specify a startblock and resume\n");
+            goto err;
+        }
+
+        if (flag == 0) {
+            startblock = wk_resumesession(fpath, charset);
+            if (startblock == NULL) goto err; 
+            min = wcslen(startblock);
+        }
+
+        if (flag == 1) {
+            fprintf(stderr,"permute doesn't support resume\n");
+            goto err;
+        }
+    } else {
+        if (fpath != NULL)
+            (void)remove(fpath);
+    }
 
     return 0;
 err:
@@ -1047,9 +1072,43 @@ static void wk_fill_pattern_info(options_type *options) {
                 exit(EXIT_FAILURE);
             }
 
+            if ((index = wk_find_index(cset, clen, options->pattern[i])) == NPOS) {
+                cset = options->upp_charset;
+                clen = options->ulen;
+                dupes = options->duplicates[1];
+                if ((index = wk_find_index(cset, clen, options->pattern[i])) == NPOS) {
+                    cset = options->num_charset;
+                    clen = options->nlen;
+                    dupes = options->duplicates[2];
+                    if ((index = wk_find_index(cset, clen, options->pattern[i])) == NPOS) {
+                        cset = options->num_charset;
+                        clen = options->nlen;
+                        dupes = options->duplicates[3];
+                        if ((index = wk_find_index(cset, clen, options->pattern[i])) == NPOS) {
+                            cset = NULL;
+                            clen = 0;
+                            dupes = (size_t)-1;
+                            index = 0;
+                        }
+                    }
+                }
+            }
+
             si = ei = index;
         } else {
+            if (i < wcslen(options->min_string))
+                si = wk_find_index(cset, clen, options->min_string[i]);
+            else
+                si = 0;
+            
+            ei = wk_find_index(cset, clen, options->max_string[i]);
 
+            if (si == NPOS || ei == NPOS) {
+                fprintf(stderr,"fill_pattern_info: Internal error: "\
+                        "Can't find char at pos #%lu in cset\n",
+                        (unsigned long)i+1);
+                exit(EXIT_FAILURE);
+            }
         }
         
         p = &(options->pattern_info[i]);
@@ -1060,4 +1119,47 @@ static void wk_fill_pattern_info(options_type *options) {
         p->end_index = ei;
         p->duplicates = dupes;
     }
+}
+
+static wchar_t *wk_resumesession(const char *fpath, const wchar_t *charset) {
+    FILE *fp;               /* ptr to START output file; will be renamed later */
+    char buff[512];         /* buffer to hold line from wordlist */
+    wchar_t *startblock;
+    size_t j, k;
+
+    errno = 0;
+    memset(buff, 0, sizeof(buff));
+
+    if ((fp = fopen(fpath, "r")) == NULL) {
+        fprintf(stderr,"resume: File START could not be opened\n");
+        exit(EXIT_FAILURE);
+    } else {
+        while (feof(fp) == 0) {
+            (void)fgets(buff, (int)sizeof(buff), fp);
+            ++my_thread.linecounter;
+            my_thread.bytecounter += (unsigned long long)strlen(buff);
+        }
+        my_thread.linecounter--; /* -1 to get correct num */
+        my_thread.bytecounter -= (unsigned long long)strlen(buff);
+
+        if (fclose(fp) != 0) {
+            fprintf(stderr,"resume: fclose returned error number = %d\n", errno);
+            fprintf(stderr,"The problem is = %s\n", strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+
+        if (buff[0]) buff[strlen(buff)-1] = '\0';
+
+        startblock = wk_alloc_wide_string(buff, NULL);
+        fprintf(stderr, "Resuming from = %s\n", buff);
+
+        for (j = 0; j < wcslen(startblock); j++) {
+            for (k = 0; k < wcslen(charset); k++) {
+                if (startblock[j] == charset[k])
+                    inc[j] = k;
+            }
+        }
+        return startblock;
+    }
+    return NULL;
 }
